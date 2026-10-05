@@ -1,0 +1,80 @@
+# EDP control plane configuration.
+#
+# Every value here can be overridden by an environment variable. The prefix is
+# EDP and nested keys are separated by a double underscore, so:
+#
+#   app.name           -> EDP_APP__NAME
+#   database.password  -> EDP_DATABASE__PASSWORD
+#   auth.enabled        -> EDP_AUTH__ENABLED
+#
+# Keep real credentials out of this file. Point the fields at secrets and supply
+# the values through the environment in any shared environment.
+
+app:
+  name: edp-control-plane
+  # dev | staging | prod. Only "prod" switches on production-safe behaviour.
+  env: dev
+  version: 0.1.0
+  # Prefix the versioned API is served under.
+  base_path: /api/v1
+
+http:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout: 15s
+  write_timeout: 30s
+  idle_timeout: 120s
+  shutdown_timeout: 20s
+  # Empty means same-origin only. Set explicit origins in staging and prod; the
+  # wildcard is refused outside dev by configuration validation.
+  cors_allow_origins: []
+
+database:
+  host: localhost
+  port: 5432
+  user: edp
+  password: edp
+  name: edp_control_plane
+  ssl_mode: disable
+  max_conns: 25
+  min_conns: 2
+  max_conn_lifetime: 30m
+  max_conn_idle_time: 5m
+  health_timeout: 3s
+  # Leave false outside development. Schema changes should be a deliberate
+  # deployment step (`api -migrate`), not a side effect of starting the server.
+  migrate_on_boot: false
+  migrations_path: migrations
+
+auth:
+  # Disabled by default so the service is usable locally. When enabled, every
+  # API route requires a token whose signature verifies against jwks_url and
+  # whose issuer and audience match.
+  enabled: false
+  issuer: ""
+  audience: edp-control-plane
+  jwks_url: ""
+  jwks_refresh_interval: 15m
+  clock_skew: 60s
+  roles_claim: roles
+  scopes_claim: scope
+  tenant_claim: tenant_id
+  admin_roles:
+    - platform-admin
+
+airflow:
+  # The execution domain serves run history without an orchestrator; triggering
+  # a run is the only operation that needs one.
+  enabled: false
+  base_url: http://localhost:8081
+  username: ""
+  password: ""
+  timeout: 10s
+  dag_id_prefix: edp_
+
+log:
+  # debug | info | warn | error
+  level: info
+  # json for anything a machine reads, text for local development.
+  format: json
+  add_source: false

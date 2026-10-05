@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ---- Material 3 tokens (ported from template.html) ---- */
+    --primary: #004ac6;
+    --on-primary: #ffffff;
+    --primary-container: #2563eb;
+    --on-primary-container: #eeefff;
+    --inverse-primary: #b4c5ff;
+    --primary-fixed: #dbe1ff;
+    --primary-fixed-dim: #b4c5ff;
+    --on-primary-fixed: #00174b;
+    --on-primary-fixed-variant: #003ea8;
+
+    --secondary: #565e74;
+    --on-secondary: #ffffff;
+    --secondary-container: #dae2fd;
+    --on-secondary-container: #5c647a;
+    --secondary-fixed: #dae2fd;
+    --secondary-fixed-dim: #bec6e0;
+    --on-secondary-fixed: #131b2e;
+    --on-secondary-fixed-variant: #3f465c;
+
+    --tertiary: #006242;
+    --on-tertiary: #ffffff;
+    --tertiary-container: #007d55;
+    --on-tertiary-container: #bdffdb;
+    --tertiary-fixed: #6ffbbe;
+    --tertiary-fixed-dim: #4edea3;
+    --on-tertiary-fixed: #002113;
+    --on-tertiary-fixed-variant: #005236;
+
+    --error: #ba1a1a;
+    --on-error: #ffffff;
+    --error-container: #ffdad6;
+    --on-error-container: #93000a;
+
+    --background: #f8f9ff;
+    --on-background: #0b1c30;
+
+    --surface: #f8f9ff;
+    --on-surface: #0b1c30;
+    --surface-bright: #f8f9ff;
+    --surface-dim: #cbdbf5;
+    --surface-variant: #d3e4fe;
+    --on-surface-variant: #434655;
+    --surface-tint: #0053db;
+    --surface-container-lowest: #ffffff;
+    --surface-container-low: #eff4ff;
+    --surface-container: #e5eeff;
+    --surface-container-high: #dce9ff;
+    --surface-container-highest: #d3e4fe;
+
+    --inverse-surface: #213145;
+    --inverse-on-surface: #eaf1ff;
+
+    --outline: #737686;
+    --outline-variant: #c3c6d7;
+
+    --radius: 0.125rem;
+
+    /* ---- Material Symbols icon font (matches template) ---- */
+    --font-symbols: "Material Symbols Outlined";
+  }
+
+  .dark {
+    --primary: #b4c5ff;
+    --on-primary: #003ea8;
+    --primary-container: #004ac6;
+    --on-primary-container: #dbe1ff;
+    --inverse-primary: #004ac6;
+
+    --secondary-container: #3f465c;
+    --on-secondary-container: #dae2fd;
+
+    --tertiary: #4edea3;
+    --on-tertiary: #00392a;
+    --tertiary-container: #005236;
+    --on-tertiary-container: #6ffbbe;
+
+    --error: #ffb4ab;
+    --on-error: #690005;
+    --error-container: #93000a;
+    --on-error-container: #ffdad6;
+
+    --background: #0b1c30;
+    --on-background: #eaf1ff;
+
+    --surface: #101c2e;
+    --on-surface: #e2e2ec;
+    --surface-bright: #364253;
+    --surface-dim: #0b1c30;
+    --surface-variant: #434655;
+    --on-surface-variant: #c3c6d7;
+    --surface-container-lowest: #06111f;
+    --surface-container-low: #152436;
+    --surface-container: #1a293b;
+    --surface-container-high: #253444;
+    --surface-container-highest: #303f4f;
+
+    --inverse-surface: #e2e2ec;
+    --inverse-on-surface: #2d3644;
+
+    --outline: #8d90a2;
+    --outline-variant: #434655;
+  }
+
+  * {
+    @apply border-outline-variant;
+  }
+
+  html,
+  body {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    @apply bg-surface text-on-surface font-sans text-body-md antialiased;
+    overscroll-behavior: none;
+  }
+
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer utilities {
+  /* safe-area helpers, same names as the template */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* Material Symbols ligature rendering */
+  .material-symbols-outlined {
+    font-family: var(--font-symbols);
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    font-variation-settings:
+      "FILL" 0,
+      "wght" 400,
+      "GRAD" 0,
+      "opsz" 24;
+  }
+
+  .material-symbols-outlined-filled {
+    font-family: var(--font-symbols);
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    white-space: nowrap;
+    direction: ltr;
+    user-select: none;
+    font-variation-settings:
+      "FILL" 1,
+      "wght" 400,
+      "GRAD" 0,
+      "opsz" 24;
+  }
+}

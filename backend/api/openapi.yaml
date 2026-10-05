@@ -1,0 +1,2124 @@
+openapi: 3.0.3
+
+info:
+  title: EDP Control Plane API
+  description: |
+    Enterprise data control plane for registering sources and datasets,
+    authoring and deploying pipelines, enforcing data quality and governance
+    policy, tracking lineage and impact, orchestrating runs, and recording an
+    append-only audit trail.
+
+    ## Conventions
+
+    * All collection endpoints are paginated with `limit` and `offset`, and
+      sorted with `sort_by` and `sort_dir`. See the shared parameters.
+    * Errors always use the same envelope: `error.code`, `error.message`,
+      `error.details` and a top-level `request_id` that matches the
+      `X-Request-Id` response header.
+    * Mutations are `PATCH` rather than `PUT`, so a caller updates only the
+      fields it means to change.
+    * Request bodies are validated before any state is written; a validation
+      failure returns `422` with one entry per offending field.
+  version: 0.1.0
+  contact:
+    name: Data Platform Engineering
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+  - url: https://edp.internal/api/v1
+    description: Internal deployment
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: sources
+    description: Connection and ownership metadata for external systems.
+  - name: datasets
+    description: Physical datasets, their schemas and governance metadata.
+  - name: pipelines
+    description: DAG authoring, validation and deployment.
+  - name: quality
+    description: Quality rules, check runs and dataset health.
+  - name: governance
+    description: Policies and data contracts.
+  - name: lineage
+    description: Data lineage edges, graph views and impact analysis.
+  - name: execution
+    description: Pipeline run lifecycle and orchestrator synchronisation.
+  - name: audit
+    description: Append-only audit trail.
+  - name: operations
+    description: Health probes and build metadata. Never authenticated.
+
+paths:
+  /sources:
+    get:
+      tags: [sources]
+      operationId: listSources
+      summary: List sources
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: q
+          in: query
+          description: Case-insensitive substring match on name and description.
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [database, object_store, file_system, api, stream, warehouse] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, inactive, deprecated, error] }
+        - name: environment
+          in: query
+          schema: { type: string, enum: [dev, staging, prod] }
+        - name: owner_id
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          description: Repeatable; results must carry every tag listed.
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of sources.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourcePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [sources]
+      operationId: createSource
+      summary: Register a source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceWrite' }
+      responses:
+        '201':
+          description: The registered source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /sources/by-slug/{slug}:
+    get:
+      tags: [sources]
+      operationId: getSourceBySlug
+      summary: Fetch a source by slug
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: The source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sources/{sourceID}:
+    parameters:
+      - $ref: '#/components/parameters/SourceID'
+    get:
+      tags: [sources]
+      operationId: getSource
+      summary: Fetch a source
+      responses:
+        '200':
+          description: The source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [sources]
+      operationId: updateSource
+      summary: Update a source
+      description: Only the supplied fields are changed. Connection credentials are never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceWritePartial' }
+      responses:
+        '200':
+          description: The updated source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [sources]
+      operationId: deleteSource
+      summary: Delete a source
+      description: Refused with `409` while any dataset still references the source.
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /sources/{sourceID}/health-checks:
+    parameters:
+      - $ref: '#/components/parameters/SourceID'
+    post:
+      tags: [sources]
+      operationId: recordSourceHealthCheck
+      summary: Record a connectivity check result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [healthy, degraded, unreachable, unknown] }
+                latency_ms: { type: integer, minimum: 0 }
+                message: { type: string }
+                checked_at:
+                  type: string
+                  format: date-time
+                  description: Defaults to the time the request was received.
+      responses:
+        '200':
+          description: The source with its health status updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /datasets:
+    get:
+      tags: [datasets]
+      operationId: listDatasets
+      summary: List datasets
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [table, view, file, topic, stream, model] }
+        - name: classification
+          in: query
+          schema: { type: string, enum: [public, internal, confidential, restricted, pii] }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: source_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: domain
+          in: query
+          schema: { type: string }
+        - name: owner_id
+          in: query
+          schema: { type: string }
+        - name: steward_id
+          in: query
+          schema: { type: string }
+        - name: include_columns
+          in: query
+          description: Include the column list on each dataset.
+          schema: { type: boolean, default: false }
+        - name: tag
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of datasets.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [datasets]
+      operationId: createDataset
+      summary: Register a dataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetWrite' }
+      responses:
+        '201':
+          description: The registered dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /datasets/by-slug/{slug}:
+    get:
+      tags: [datasets]
+      operationId: getDatasetBySlug
+      summary: Fetch a dataset by slug
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+        - name: include_columns
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /datasets/{datasetID}:
+    parameters:
+      - $ref: '#/components/parameters/DatasetID'
+    get:
+      tags: [datasets]
+      operationId: getDataset
+      summary: Fetch a dataset
+      parameters:
+        - name: include_columns
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [datasets]
+      operationId: updateDataset
+      summary: Update a dataset
+      description: |
+        Destructive changes are refused. Classification may only be raised, never
+        lowered, and columns cannot be dropped through this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetWritePartial' }
+      responses:
+        '200':
+          description: The updated dataset.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [datasets]
+      operationId: deleteDataset
+      summary: Delete a dataset
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /datasets/{datasetID}/quality-health:
+    parameters:
+      - $ref: '#/components/parameters/DatasetID'
+    get:
+      tags: [quality]
+      operationId: getDatasetQualityHealth
+      summary: Aggregate quality health for a dataset
+      description: |
+        Combines the most recent check run for each enabled rule into a single
+        score and status. The score is a completeness ratio, not a statistical
+        measure.
+      responses:
+        '200':
+          description: The dataset's quality health.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityHealth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipelines:
+    get:
+      tags: [pipelines]
+      operationId: listPipelines
+      summary: List pipelines
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, active, paused, archived, error] }
+        - name: owner_id
+          in: query
+          schema: { type: string }
+        - name: dag_id
+          in: query
+          schema: { type: string }
+        - name: deployed
+          in: query
+          description: Restrict to pipelines that do or do not have a deployed DAG.
+          schema: { type: boolean }
+        - name: tag
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of pipelines.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelinePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [pipelines]
+      operationId: createPipeline
+      summary: Create a pipeline
+      description: |
+        The supplied tasks and dependencies are validated as a whole. A graph
+        with a cycle, a dependency on an unknown task, or a duplicate task key is
+        rejected and nothing is persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PipelineWrite' }
+      responses:
+        '201':
+          description: The created pipeline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pipeline' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /pipelines/by-slug/{slug}:
+    get:
+      tags: [pipelines]
+      operationId: getPipelineBySlug
+      summary: Fetch a pipeline by slug
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: The pipeline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pipeline' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipelines/{pipelineID}:
+    parameters:
+      - $ref: '#/components/parameters/PipelineID'
+    get:
+      tags: [pipelines]
+      operationId: getPipeline
+      summary: Fetch a pipeline
+      description: Task and dependency lists are populated only on this detail read.
+      responses:
+        '200':
+          description: The pipeline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pipeline' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [pipelines]
+      operationId: updatePipeline
+      summary: Update a pipeline
+      description: Supplying `tasks` or `dependencies` replaces the whole graph, which is revalidated before saving.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PipelineWritePartial' }
+      responses:
+        '200':
+          description: The updated pipeline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pipeline' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [pipelines]
+      operationId: deletePipeline
+      summary: Delete a pipeline
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /pipelines/{pipelineID}/order:
+    parameters:
+      - $ref: '#/components/parameters/PipelineID'
+    get:
+      tags: [pipelines]
+      operationId: getPipelineOrder
+      summary: Resolve the pipeline execution order
+      description: |
+        Returns a topological ordering of the task keys. Ready is the subset whose
+        upstream tasks have all completed. Both are `false` only if the stored
+        graph contains a cycle, which validation prevents.
+      responses:
+        '200':
+          description: The resolved order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order, ready]
+                properties:
+                  order:
+                    type: array
+                    items: { type: string }
+                  ready:
+                    type: array
+                    items: { type: string }
+                  acyclic: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /quality-rules:
+    get:
+      tags: [quality]
+      operationId: listQualityRules
+      summary: List quality rules
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: dataset_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: pipeline_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: rule_type
+          in: query
+          schema: { type: array, items: { type: string } }
+        - name: severity
+          in: query
+          schema: { type: array, items: { type: string, enum: [info, warning, error, critical] } }
+        - name: dimension
+          in: query
+          description: Repeatable; the dimension field is multi-valued.
+          schema: { type: array, items: { type: string } }
+        - name: enabled
+          in: query
+          schema: { type: boolean }
+        - name: blocking
+          in: query
+          schema: { type: boolean }
+        - name: tag
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of quality rules.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityRulePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [quality]
+      operationId: createQualityRule
+      summary: Create a quality rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QualityRuleWrite' }
+      responses:
+        '201':
+          description: The created rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityRule' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /quality-rules/{ruleID}:
+    parameters:
+      - $ref: '#/components/parameters/RuleID'
+    get:
+      tags: [quality]
+      operationId: getQualityRule
+      summary: Fetch a quality rule
+      responses:
+        '200':
+          description: The rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityRule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [quality]
+      operationId: updateQualityRule
+      summary: Update a quality rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QualityRuleWritePartial' }
+      responses:
+        '200':
+          description: The updated rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityRule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [quality]
+      operationId: deleteQualityRule
+      summary: Delete a quality rule
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /quality-rules/{ruleID}/checks:
+    parameters:
+      - $ref: '#/components/parameters/RuleID'
+    get:
+      tags: [quality]
+      operationId: listQualityChecksForRule
+      summary: List check runs for a rule
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: status
+          in: query
+          schema: { type: array, items: { type: string, enum: [passed, failed, warning, error, skipped] } }
+      responses:
+        '200':
+          description: A page of check runs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityCheckPage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /quality-checks:
+    get:
+      tags: [quality]
+      operationId: listQualityChecks
+      summary: List check runs across all rules
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: rule_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: dataset_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: pipeline_run_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of check runs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityCheckPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /quality-checks/{checkID}:
+    parameters:
+      - name: checkID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [quality]
+      operationId: getQualityCheck
+      summary: Fetch a check run
+      responses:
+        '200':
+          description: The check run, including observed and expected values.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QualityCheck' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /policies:
+    get:
+      tags: [governance]
+      operationId: listPolicies
+      summary: List policies
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: policy_type
+          in: query
+          schema: { type: string }
+        - name: resource_type
+          in: query
+          schema: { type: string }
+        - name: resource_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: effect
+          in: query
+          schema: { type: string, enum: [allow, deny, warn, require] }
+        - name: enabled
+          in: query
+          schema: { type: boolean }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of policies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [governance]
+      operationId: createPolicy
+      summary: Create a policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyWrite' }
+      responses:
+        '201':
+          description: The created policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /policies/by-slug/{slug}:
+    get:
+      tags: [governance]
+      operationId: getPolicyBySlug
+      summary: Fetch a policy by slug
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: The policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /policies/retention:
+    get:
+      tags: [governance]
+      operationId: getRetentionPolicy
+      summary: Resolve the effective retention policy for a resource
+      description: |
+        Returns the most specific enabled retention policy for the resource. A
+        policy scoped to the resource wins over one scoped to its type, which in
+        turn wins over the global default. Returns `204` when nothing applies.
+      parameters:
+        - name: resource_type
+          in: query
+          required: true
+          schema: { type: string }
+        - name: resource_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: dataset_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The effective retention policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '204': { description: No retention policy applies. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /policies/evaluate:
+    post:
+      tags: [governance]
+      operationId: evaluatePolicy
+      summary: Evaluate governance policies against a request
+      description: |
+        Pure evaluation: no state is written and the request actor is irrelevant.
+        All matching policies are returned so a caller can explain a decision,
+        along with the effective decision after precedence is applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, action]
+              properties:
+                resource_type: { type: string }
+                resource_id: { type: string, format: uuid }
+                dataset_id: { type: string, format: uuid }
+                action: { type: string }
+                classification: { type: string }
+                actor_id: { type: string }
+                actor_roles: { type: array, items: { type: string } }
+                environment: { type: string, enum: [dev, staging, prod] }
+                attributes:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The evaluation result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyEvaluation' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /policies/{policyID}:
+    parameters:
+      - name: policyID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [governance]
+      operationId: getPolicy
+      summary: Fetch a policy
+      responses:
+        '200':
+          description: The policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [governance]
+      operationId: updatePolicy
+      summary: Update a policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyWritePartial' }
+      responses:
+        '200':
+          description: The updated policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [governance]
+      operationId: deletePolicy
+      summary: Delete a policy
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /data-contracts:
+    get:
+      tags: [governance]
+      operationId: listDataContracts
+      summary: List data contracts
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: dataset_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, active, breached, retired] }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of data contracts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataContractPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [governance]
+      operationId: createDataContract
+      summary: Create a data contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DataContractWrite' }
+      responses:
+        '201':
+          description: The created contract.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataContract' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /data-contracts/{contractID}:
+    parameters:
+      - name: contractID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [governance]
+      operationId: getDataContract
+      summary: Fetch a data contract
+      responses:
+        '200':
+          description: The contract.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataContract' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [governance]
+      operationId: updateDataContract
+      summary: Update a data contract
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DataContractWritePartial' }
+      responses:
+        '200':
+          description: The updated contract.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataContract' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [governance]
+      operationId: deleteDataContract
+      summary: Delete a data contract
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /data-contracts/{contractID}/sign:
+    parameters:
+      - name: contractID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [governance]
+      operationId: signDataContract
+      summary: Sign a data contract on behalf of a party
+      description: |
+        A contract must be signed by a distinct producer and consumer before it
+        becomes active; a party may not sign twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [party, signed_by]
+              properties:
+                party: { type: string, enum: [producer, consumer] }
+                signed_by: { type: string }
+                signature_ref:
+                  type: string
+                  description: Secret reference holding the detached signature, for example env://CONTRACT_SIG.
+      responses:
+        '200':
+          description: The contract with the signature recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataContract' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /lineage/edges:
+    get:
+      tags: [lineage]
+      operationId: listLineageEdges
+      summary: List lineage edges
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: from_entity_type
+          in: query
+          schema: { type: string, enum: [source, dataset, pipeline, task, model] }
+        - name: from_entity_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from_column
+          in: query
+          schema: { type: string }
+        - name: to_entity_type
+          in: query
+          schema: { type: string, enum: [source, dataset, pipeline, task, model] }
+        - name: to_entity_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: to_column
+          in: query
+          schema: { type: string }
+        - name: transform_type
+          in: query
+          schema: { type: string }
+        - name: column_level_only
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: A page of lineage edges.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageEdgePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [lineage]
+      operationId: createLineageEdge
+      summary: Record a lineage edge
+      description: Adding the reverse edge automatically is not performed; register both directions if both are known.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LineageEdgeWrite' }
+      responses:
+        '201':
+          description: The recorded edge.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageEdge' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /lineage/edges/{edgeID}:
+    parameters:
+      - name: edgeID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [lineage]
+      operationId: getLineageEdge
+      summary: Fetch a lineage edge
+      responses:
+        '200':
+          description: The edge.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageEdge' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [lineage]
+      operationId: deleteLineageEdge
+      summary: Delete a lineage edge
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /lineage/graph:
+    get:
+      tags: [lineage]
+      operationId: getLineageGraph
+      summary: Read the lineage graph around an endpoint
+      description: |
+        Breadth-first expansion from an endpoint, one hop at a time. `include_columns`
+        controls whether column-level edges are returned; when it is false only
+        table-level edges are considered, so a table question does not surface
+        column hops.
+      parameters:
+        - name: entity_type
+          in: query
+          required: true
+          schema: { type: string, enum: [source, dataset, pipeline, task, model] }
+        - name: entity_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: column
+          in: query
+          description: Scope the traversal to a single column.
+          schema: { type: string }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [upstream, downstream, both], default: both }
+        - name: depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 10, default: 3 }
+        - name: include_columns
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The traversed subgraph.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageGraph' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /lineage/impact:
+    get:
+      tags: [lineage]
+      operationId: getLineageImpact
+      summary: Assess the blast radius of a change
+      description: |
+        Reports the downstream entities that would be affected, grouped by kind and
+        severity. Severity grows with distance from the origin, so the nearest
+        consumers are the most urgent.
+      parameters:
+        - name: entity_type
+          in: query
+          required: true
+          schema: { type: string, enum: [source, dataset, pipeline, task, model] }
+        - name: entity_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: column
+          in: query
+          schema: { type: string }
+        - name: depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 10, default: 5 }
+        - name: include_columns
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The impact assessment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageImpact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipeline-runs:
+    get:
+      tags: [execution]
+      operationId: listPipelineRuns
+      summary: List pipeline runs
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: pipeline_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          description: Repeatable.
+          schema: { type: array, items: { type: string, enum: [queued, running, success, failed, cancelled, skipped] } }
+        - name: active_only
+          in: query
+          description: Only queued or running runs.
+          schema: { type: boolean }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: A page of runs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRunPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [execution]
+      operationId: triggerPipelineRun
+      summary: Trigger a pipeline run
+      description: |
+        Requires the pipeline to be deployed. Returns `409` when the pipeline's
+        `max_active_runs` is already reached, so a caller can back off rather than
+        queue without bound.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline_id]
+              properties:
+                pipeline_id: { type: string, format: uuid }
+                triggered_by: { type: string }
+                config:
+                  type: object
+                  additionalProperties: true
+                note: { type: string }
+      responses:
+        '201':
+          description: The created run, in `queued` state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '503':
+          description: No orchestrator is configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /pipeline-runs/by-key/{runID}:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        description: The orchestrator run key, not the internal UUID.
+        schema: { type: string }
+    get:
+      tags: [execution]
+      operationId: getPipelineRunByKey
+      summary: Fetch a run by orchestrator key
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipeline-runs/{runID}:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [execution]
+      operationId: getPipelineRun
+      summary: Fetch a run
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipeline-runs/{runID}/cancel:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [execution]
+      operationId: cancelPipelineRun
+      summary: Cancel a run
+      description: Cancelling a run that has already finished returns `409` rather than being silently ignored.
+      responses:
+        '200':
+          description: The cancelled run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /pipeline-runs/{runID}/quality-gate:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [execution]
+      operationId: reportQualityGate
+      summary: Apply a quality gate decision to a run
+      description: |
+        A failing gate marks the run failed and records which rule failed, so a
+        blocked run explains itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passed, rule_id]
+              properties:
+                passed: { type: boolean }
+                rule_id: { type: string, format: uuid }
+                check_id: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /pipeline-runs/{runID}/tasks:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [execution]
+      operationId: listTaskRuns
+      summary: List task runs for a pipeline run
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: status
+          in: query
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: A page of task runs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskRunPage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /pipeline-runs/{runID}/tasks/{taskRunID}:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: taskRunID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [execution]
+      operationId: getTaskRun
+      summary: Fetch a task run
+      responses:
+        '200':
+          description: The task run, including log references.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orchestrator/runs/{runID}/sync:
+    parameters:
+      - name: runID
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [execution]
+      operationId: syncOrchestratorRun
+      summary: Reconcile one run from the orchestrator
+      description: |
+        The callback endpoint Airflow calls when a run finishes. Idempotent, so a
+        retried callback does not corrupt the recorded state. An unknown run key
+        returns `404` so the orchestrator stops retrying.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state: { type: string }
+                start_date: { type: string, format: date-time }
+                end_date: { type: string, format: date-time }
+                message: { type: string }
+      responses:
+        '200':
+          description: The updated run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orchestrator/tasks/sync:
+    post:
+      tags: [execution]
+      operationId: syncOrchestratorTask
+      summary: Reconcile one task run from the orchestrator
+      description: Idempotent, in the same way as the run callback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_key, state]
+              properties:
+                run_id: { type: string }
+                task_key: { type: string }
+                try_number: { type: integer, minimum: 1 }
+                state: { type: string }
+                start_date: { type: string, format: date-time }
+                end_date: { type: string, format: date-time }
+                log_url: { type: string }
+      responses:
+        '200':
+          description: The updated task run.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /audit-events:
+    get:
+      tags: [audit]
+      operationId: listAuditEvents
+      summary: List audit events
+      description: |
+        Every query is bounded. `since` is required in effect: when omitted the
+        service applies its maximum lookback window rather than scanning the whole
+        table.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortDir'
+        - name: entity_type
+          in: query
+          schema: { type: string }
+        - name: entity_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actor_id
+          in: query
+          schema: { type: string }
+        - name: outcome
+          in: query
+          schema: { type: string, enum: [success, failure, denied] }
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: A page of audit events.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEventPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /audit-events/{eventID}:
+    parameters:
+      - name: eventID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [audit]
+      operationId: getAuditEvent
+      summary: Fetch an audit event
+      responses:
+        '200':
+          description: The event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEvent' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A JWT verified against the configured JWKS. Issuer, audience and expiry are
+        all checked. When authentication is disabled the API runs without any
+        middleware and every request is attributed to a development actor.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Page size.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      description: Rows to skip.
+      schema: { type: integer, minimum: 0, default: 0 }
+    SortBy:
+      name: sort_by
+      in: query
+      description: Column to sort on. Unknown columns are rejected.
+      schema: { type: string }
+    SortDir:
+      name: sort_dir
+      in: query
+      schema: { type: string, enum: [asc, desc], default: desc }
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, maxLength: 100 }
+    SourceID:
+      name: sourceID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DatasetID:
+      name: datasetID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PipelineID:
+      name: pipelineID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RuleID:
+      name: ruleID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: The query string or path parameters were malformed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid token was presented.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: The request conflicts with current state.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: The body failed validation. Every offending field is listed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: An unexpected server fault. The request id identifies the log entry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code.
+              enum:
+                - BAD_REQUEST
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - CONFLICT
+                - VALIDATION_FAILED
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+                - NOT_IMPLEMENTED
+            message:
+              type: string
+              description: Human-readable summary. Safe to show a user.
+            details:
+              type: array
+              description: Present for validation failures.
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+        request_id:
+          type: string
+          format: uuid
+          description: Matches the X-Request-Id header, for correlating with logs.
+
+    PageMeta:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit: { type: integer }
+        offset: { type: integer }
+        total: { type: integer }
+
+    Source:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        type: { type: string }
+        environment: { type: string }
+        status: { type: string }
+        connection_ref:
+          type: string
+          description: Secret reference for credentials, for example env://PG_MAIN. The value is never returned.
+        owner_id: { type: string }
+        tags: { type: array, items: { type: string } }
+        metadata: { type: object, additionalProperties: true }
+        health_status: { type: string }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SourceWrite:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string, maxLength: 200 }
+        slug: { type: string, maxLength: 100 }
+        description: { type: string, maxLength: 4000 }
+        type: { type: string }
+        environment: { type: string, enum: [dev, staging, prod] }
+        connection_ref: { type: string }
+        owner_id: { type: string }
+        tags: { type: array, items: { type: string }, maxItems: 20 }
+        metadata: { type: object, additionalProperties: true }
+    SourceWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/SourceWrite'
+
+    Dataset:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        kind: { type: string }
+        environment: { type: string }
+        classification: { type: string }
+        sensitivity: { type: string }
+        status: { type: string }
+        domain: { type: string }
+        owner_id: { type: string }
+        steward_id: { type: string }
+        tags: { type: array, items: { type: string } }
+        metadata: { type: object, additionalProperties: true }
+        columns:
+          type: array
+          description: Populated only when include_columns is true.
+          items: { $ref: '#/components/schemas/DatasetColumn' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DatasetColumn:
+      type: object
+      properties:
+        name: { type: string }
+        data_type: { type: string }
+        nullable: { type: boolean }
+        primary_key: { type: boolean }
+        classification: { type: string }
+        description: { type: string }
+        ordinal: { type: integer }
+    DatasetWrite:
+      type: object
+      required: [source_id, name, kind]
+      properties:
+        source_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        kind: { type: string }
+        environment: { type: string }
+        classification: { type: string }
+        sensitivity: { type: string }
+        domain: { type: string }
+        owner_id: { type: string }
+        steward_id: { type: string }
+        tags: { type: array, items: { type: string } }
+        metadata: { type: object, additionalProperties: true }
+        columns: { type: array, items: { $ref: '#/components/schemas/DatasetColumn' } }
+    DatasetWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/DatasetWrite'
+
+    PipelineTask:
+      type: object
+      required: [task_key, operator_type]
+      properties:
+        task_key:
+          type: string
+          pattern: '^[a-z0-9]+(_[a-z0-9]+)*$'
+          description: Lowercase snake_case, unique within the pipeline.
+        name: { type: string }
+        operator_type:
+          type: string
+          enum: [python, sql, bash, spark, http_poll, great_expectations, dbt, container, kubernetes_pod]
+        operator_config:
+          type: object
+          additionalProperties: true
+          description: Required keys depend on the operator. Python needs either python_callable or file_path.
+        upstream_dataset_id: { type: string, format: uuid, nullable: true }
+        downstream_dataset_id: { type: string, format: uuid, nullable: true }
+        max_retries: { type: integer, minimum: 0 }
+        retry_delay_seconds: { type: integer, minimum: 0 }
+        timeout_seconds: { type: integer, minimum: 1 }
+        sla_minutes: { type: integer, minimum: 1, nullable: true }
+        is_critical: { type: boolean }
+        enabled: { type: boolean }
+    PipelineDependency:
+      type: object
+      required: [upstream_key, downstream_key]
+      properties:
+        upstream_key: { type: string }
+        downstream_key: { type: string }
+    Pipeline:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        dag_id:
+          type: string
+          description: The identifier published to the orchestrator. Empty until deployed.
+        status: { type: string }
+        schedule: { type: string, description: Five-field cron expression. }
+        timezone: { type: string }
+        max_active_runs: { type: integer }
+        catchup: { type: boolean }
+        default_dataset_id: { type: string, format: uuid, nullable: true }
+        owner_id: { type: string }
+        tags: { type: array, items: { type: string } }
+        task_count: { type: integer }
+        graph_hash:
+          type: string
+          description: Changes with the graph shape, letting execution detect drift from the deployed DAG.
+        tasks:
+          type: array
+          description: Present on detail reads only.
+          items: { $ref: '#/components/schemas/PipelineTask' }
+        dependencies:
+          type: array
+          description: Present on detail reads only.
+          items: { $ref: '#/components/schemas/PipelineDependency' }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PipelineWrite:
+      type: object
+      required: [name, owner_id]
+      properties:
+        name: { type: string, maxLength: 200 }
+        slug: { type: string, maxLength: 100 }
+        description: { type: string, maxLength: 4000 }
+        dag_id: { type: string, maxLength: 200 }
+        schedule: { type: string }
+        timezone: { type: string }
+        status: { type: string }
+        max_active_runs: { type: integer, minimum: 1 }
+        catchup: { type: boolean }
+        default_dataset_id: { type: string, format: uuid }
+        owner_id: { type: string }
+        tags: { type: array, items: { type: string } }
+        metadata: { type: object, additionalProperties: true }
+        tasks: { type: array, items: { $ref: '#/components/schemas/PipelineTask' } }
+        dependencies: { type: array, items: { $ref: '#/components/schemas/PipelineDependency' } }
+    PipelineWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/PipelineWrite'
+
+    QualityRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dataset_id: { type: string, format: uuid, nullable: true }
+        pipeline_id: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        description: { type: string }
+        rule_type: { type: string }
+        dimension: { type: array, items: { type: string } }
+        severity: { type: string, enum: [info, warning, error, critical] }
+        expression: { type: string }
+        threshold: { type: number }
+        blocking:
+          type: boolean
+          description: When true a failure fails the pipeline run rather than only warning.
+        enabled: { type: boolean }
+        tags: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    QualityRuleWrite:
+      type: object
+      required: [name, rule_type, expression]
+      properties:
+        dataset_id: { type: string, format: uuid }
+        pipeline_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        rule_type: { type: string }
+        dimension: { type: array, items: { type: string } }
+        severity: { type: string, enum: [info, warning, error, critical] }
+        expression: { type: string }
+        threshold: { type: number }
+        blocking: { type: boolean }
+        enabled: { type: boolean }
+        tags: { type: array, items: { type: string } }
+    QualityRuleWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/QualityRuleWrite'
+
+    QualityCheck:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        rule_id: { type: string, format: uuid }
+        dataset_id: { type: string, format: uuid, nullable: true }
+        pipeline_run_id: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [passed, failed, warning, error, skipped] }
+        observed_value: { type: number, nullable: true }
+        expected_value: { type: number, nullable: true }
+        row_count: { type: integer, nullable: true }
+        message: { type: string }
+        checked_at: { type: string, format: date-time }
+    QualityHealth:
+      type: object
+      properties:
+        dataset_id: { type: string, format: uuid }
+        status: { type: string, enum: [healthy, degraded, failing, unknown] }
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Completeness ratio across enabled rules, not a statistical measure.
+        total_rules: { type: integer }
+        passing_rules: { type: integer }
+        failing_rules: { type: integer }
+        blocking_failures: { type: integer }
+        worst_severity: { type: string }
+        checked_at: { type: string, format: date-time, nullable: true }
+
+    Policy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string }
+        policy_type: { type: string }
+        effect: { type: string, enum: [allow, deny, warn, require] }
+        resource_type: { type: string }
+        resource_id: { type: string, format: uuid, nullable: true }
+        applies_to_classification: { type: string }
+        applies_to_environment: { type: string }
+        conditions: { type: object, additionalProperties: true }
+        actions: { type: array, items: { type: string } }
+        priority: { type: integer }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    PolicyWrite:
+      type: object
+      required: [name, policy_type, effect]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string }
+        policy_type: { type: string }
+        effect: { type: string, enum: [allow, deny, warn, require] }
+        resource_type: { type: string }
+        resource_id: { type: string, format: uuid }
+        applies_to_classification: { type: string }
+        applies_to_environment: { type: string }
+        conditions: { type: object, additionalProperties: true }
+        actions: { type: array, items: { type: string } }
+        priority: { type: integer }
+        enabled: { type: boolean }
+    PolicyWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/PolicyWrite'
+    PolicyEvaluation:
+      type: object
+      properties:
+        decision: { type: string, enum: [allow, deny, warn, require] }
+        reason: { type: string }
+        matched_policies:
+          type: array
+          items: { $ref: '#/components/schemas/Policy' }
+
+    DataContract:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dataset_id: { type: string, format: uuid }
+        version: { type: string }
+        status: { type: string, enum: [draft, active, breached, retired] }
+        schema_definition: { type: object, additionalProperties: true }
+        sla: { type: object, additionalProperties: true }
+        producer: { type: string }
+        consumer: { type: string }
+        signatures: { type: array, items: { $ref: '#/components/schemas/ContractSignature' } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ContractSignature:
+      type: object
+      properties:
+        party: { type: string, enum: [producer, consumer] }
+        signed_by: { type: string }
+        signed_at: { type: string, format: date-time }
+        signature_ref: { type: string }
+    DataContractWrite:
+      type: object
+      required: [dataset_id, version]
+      properties:
+        dataset_id: { type: string, format: uuid }
+        version: { type: string }
+        schema_definition: { type: object, additionalProperties: true }
+        sla: { type: object, additionalProperties: true }
+        producer: { type: string }
+        consumer: { type: string }
+    DataContractWritePartial:
+      allOf:
+        - $ref: '#/components/schemas/DataContractWrite'
+
+    LineageEdge:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        from_entity_type: { type: string }
+        from_entity_id: { type: string, format: uuid }
+        from_column: { type: string, description: Empty for a table-level edge. }
+        to_entity_type: { type: string }
+        to_entity_id: { type: string, format: uuid }
+        to_column: { type: string, description: Empty for a table-level edge. }
+        transform_type: { type: string }
+        transform_expression: { type: string }
+        observed_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    LineageEdgeWrite:
+      type: object
+      required: [from_entity_type, from_entity_id, to_entity_type, to_entity_id]
+      properties:
+        from_entity_type: { type: string, enum: [source, dataset, pipeline, task, model] }
+        from_entity_id: { type: string, format: uuid }
+        from_column: { type: string }
+        to_entity_type: { type: string, enum: [source, dataset, pipeline, task, model] }
+        to_entity_id: { type: string, format: uuid }
+        to_column: { type: string }
+        transform_type: { type: string }
+        transform_expression: { type: string }
+        observed_at: { type: string, format: date-time }
+    LineageGraph:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              entity_type: { type: string }
+              entity_id: { type: string, format: uuid }
+              column: { type: string }
+              depth: { type: integer }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/LineageEdge' }
+    LineageImpact:
+      type: object
+      properties:
+        origin:
+          type: object
+          properties:
+            entity_type: { type: string }
+            entity_id: { type: string, format: uuid }
+            column: { type: string }
+        affected_count: { type: integer }
+        by_type:
+          type: object
+          additionalProperties: { type: integer }
+        entities:
+          type: array
+          items:
+            type: object
+            properties:
+              entity_type: { type: string }
+              entity_id: { type: string, format: uuid }
+              column: { type: string }
+              distance: { type: integer }
+              severity: { type: string, enum: [low, medium, high, critical] }
+
+    PipelineRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        pipeline_id: { type: string, format: uuid }
+        run_id: { type: string, description: The orchestrator run key. }
+        dag_id: { type: string }
+        status: { type: string, enum: [queued, running, success, failed, cancelled, skipped] }
+        trigger_type: { type: string, enum: [manual, scheduled, api, upstream] }
+        config: { type: object, additionalProperties: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        ended_at: { type: string, format: date-time, nullable: true }
+        duration_ms: { type: integer, nullable: true }
+        quality_gate_status: { type: string, nullable: true }
+        quality_gate_rule_id: { type: string, format: uuid, nullable: true }
+        triggered_by: { type: string }
+        created_at: { type: string, format: date-time }
+    TaskRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        task_key: { type: string }
+        try_number: { type: integer }
+        status: { type: string, enum: [queued, running, success, failed, skipped, upstream_failed] }
+        started_at: { type: string, format: date-time, nullable: true }
+        ended_at: { type: string, format: date-time, nullable: true }
+        duration_ms: { type: integer, nullable: true }
+        log_url: { type: string }
+        message: { type: string }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        actor_id: { type: string }
+        actor_type: { type: string }
+        action: { type: string }
+        entity_type: { type: string }
+        entity_id: { type: string, format: uuid, nullable: true }
+        entity_name: { type: string }
+        outcome: { type: string, enum: [success, failure, denied] }
+        change_set:
+          type: object
+          additionalProperties: true
+          description: Redacted and size-bounded before storage.
+        duration_ms: { type: integer, nullable: true }
+        ip_address: { type: string, nullable: true }
+        user_agent: { type: string }
+        request_id: { type: string }
+
+    SourcePage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Source' } }
+    DatasetPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Dataset' } }
+    PipelinePage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Pipeline' } }
+    QualityRulePage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/QualityRule' } }
+    QualityCheckPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/QualityCheck' } }
+    PolicyPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Policy' } }
+    DataContractPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/DataContract' } }
+    LineageEdgePage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/LineageEdge' } }
+    PipelineRunPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/PipelineRun' } }
+    TaskRunPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/TaskRun' } }
+    AuditEventPage:
+      allOf:
+        - $ref: '#/components/schemas/Page'
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
+
+    Page:
+      type: object
+      description: Every list endpoint returns the same envelope.
+      required: [items, meta]
+      properties:
+        items:
+          type: array
+          items: {}
+        meta: { $ref: '#/components/schemas/PageMeta' }
