@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = React.useCallback(
-    async ({ email, password, rememberDevice, requireFido2 }: Credentials) => {
+    async ({ email, password, rememberDevice }: Credentials) => {
       setIsLoading(true);
       try {
         const result = await authService.login(email, password, rememberDevice);

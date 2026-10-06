@@ -46,7 +46,7 @@ export class AuthService {
     // Parse user from the response
     const user: User = {
       email: data.user.email,
-      displayName: data.user.name || data.user.email.split("@")[0],
+      displayName: data.user.displayName || data.user.email.split("@")[0],
       cluster: "prod-us-central1.edp.internal",
       rememberDevice,
       requireFido2: false,
